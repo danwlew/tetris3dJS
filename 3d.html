@@ -2,14 +2,15 @@
 <html lang="pl">
 <head>
   <meta charset="UTF-8">
-  <title>3D Tetris z cieniem na dnie studni</title>
+  <title>3D Tetris</title>
   <style>
     body { margin: 0; overflow: hidden; background: #000; }
     #ui {
       position: absolute;
       top: 10px; left: 10px;
       background: rgba(0,0,0,0.5);
-      color: #fff; padding: 10px;
+      color: #fff; 
+      padding: 10px;
       z-index: 999;
       font-family: sans-serif;
     }
@@ -17,93 +18,178 @@
   </style>
 </head>
 <body>
-
 <div id="ui">
   <div>Score: <span id="score">0</span></div>
   <div>Level: <span id="level">1</span></div>
   <div>View: <span id="view-angle">0°</span></div>
+  <div>Next:</div>
 </div>
 
-<!-- THREE.js -->
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 
 <script>
 /************************************************************
- * USTAWIENIA STUDNI I GRY
+ * PARAMETRY GRY
  ************************************************************/
 const BOARD_WIDTH  = 10;  // X
 const BOARD_HEIGHT = 30;  // Y
 const BOARD_DEPTH  = 10;  // Z
 
+let score = 0, level = 1, viewAngle = 0;
 const FALL_SPEED_BASE = 1000;
-let score = 0, level = 1;
-let viewAngle = 0;
 
 const COLORS = [0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeead, 0xff9999];
-const PIECE_TYPES = ['I','O','L','T'];
+const PIECE_TYPES = ['I', 'O', 'L', 'T', '3x1', '2x1', 'N', 'M'];
 
 let scene, camera, renderer;
 let tetris;
 let fallTimer = null;
 
-// Pozycja domyślna kamery
+// Domyślna pozycja kamery
 const CAMERA_DEFAULT_POS = new THREE.Vector3(15, 40, 25);
 
 /************************************************************
- * KLASA SHAPE3D - KLOCEK JAKO GROUP
+ * DRUGA SCENA (Mini-Scena) DO "NEXT PIECE"
+ ************************************************************/
+let nextScene, nextCamera;
+let nextPieceMesh = null; // obiekt 3D w podglądzie
+const NEXT_VIEW_SIZE = 100; // wielkość viewportu w pikselach (np. 150x150)
+
+// Osobny "Shape3D", ale w mini-scenie. 
+// Lub uproszczony widok - generujemy blok i ustawiamy w mini scenie.
+
+function initNextScene() {
+  nextScene = new THREE.Scene();
+  nextScene.background = new THREE.Color(0x000000);
+
+  // Kamerka ortograficzna, by prosto pokazać klocek. 
+  nextCamera = new THREE.OrthographicCamera(-3, 3, 3, -3, 0.1, 100);
+  nextCamera.position.set(0, 5, 10);
+  nextCamera.lookAt(0, 0, 0);
+
+  // Światło w mini scenie
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+  dirLight.position.set(0,10,10);
+  dirLight.castShadow = false; // do uproszczenia, nie ma cieni w mini podglądzie
+  nextScene.add(dirLight);
+
+  // Można dodać np. maleńką podłogę, ale wystarczy same "pływanie w powietrzu"
+}
+
+// Tworzymy zapasowy "group" z sub-bloczkami kształtu, stawiamy w nextScene
+function updateNextPiecePreview(type, color) {
+  // usuwamy stary obiekt z nextScene
+  if (nextPieceMesh) {
+    nextScene.remove(nextPieceMesh);
+    nextPieceMesh = null;
+  }
+
+  // Tworzymy nowy group
+  const group = new THREE.Group();
+  // pobieramy definicję sub-bloczków (2D w x,z)
+  const shapeCoords = getShapeCoords(type);
+  shapeCoords.forEach(coord => {
+    const geom = new THREE.BoxGeometry(1,1,1);
+    const mat  = new THREE.MeshPhongMaterial({ color });
+    const mesh = new THREE.Mesh(geom, mat);
+
+    // krawędzie z większym kontrastem (np. 0x000000)
+    const eg = new THREE.EdgesGeometry(geom);
+    const ed = new THREE.LineSegments(
+      eg, 
+      new THREE.LineBasicMaterial({ color: 0x000000 })
+    );
+    mesh.add(ed);
+
+    // minimalne cienie można dodać, ale w "preview" to zbędne:
+    // mesh.castShadow = mesh.receiveShadow = true;
+
+    // local position
+    mesh.position.set(coord.x, 0, coord.z);
+    group.add(mesh);
+  });
+
+  // Ustawiamy group w miniscenie centralnie
+  // obliczamy bounding box i przesuniemy do środka
+  group.position.set(-1, -0.5, -1);
+  // warto dobrać w zależności od kształtu
+  // ewentualnie obliczyć minX, maxX, minZ, maxZ i centrować
+
+  nextScene.add(group);
+  nextPieceMesh = group;
+}
+
+// Ta sama funkcja, co w kl. Shape3D, ale wyciągnięta na zewnątrz
+function getShapeCoords(type) {
+  switch(type){
+    case 'O':  return [ {x:0,z:0}, {x:1,z:0}, {x:0,z:1}, {x:1,z:1} ];
+    case 'I':  return [ {x:0,z:0}, {x:1,z:0}, {x:2,z:0}, {x:3,z:0} ];
+    case 'L':  return [ {x:0,z:0}, {x:0,z:1}, {x:0,z:2}, {x:1,z:2} ];
+    case 'T':  return [ {x:0,z:0}, {x:1,z:0}, {x:2,z:0}, {x:1,z:1} ];
+    case '3x1':return [ {x:0,z:0}, {x:1,z:0}, {x:2,z:0} ];
+    case '2x1':return [ {x:0,z:0}, {x:1,z:0} ];
+    case 'N':  
+      // wg opisu " oo\noo"
+      // interpretacja: row=0 -> (1,0),(2,0), row=1 -> (0,1),(1,1)
+      return [ {x:1,z:0}, {x:2,z:0}, {x:0,z:1}, {x:1,z:1} ];
+    case 'M':
+      // wg opisu (6 bloczków):
+      // row=0 => (0,0),(1,0)
+      // row=1 => (1,1)
+      // row=2 => (1,2)
+      // row=3 => (0,3),(1,3)
+      return [
+        {x:0,z:0}, {x:1,z:0},
+        {x:1,z:1},
+        {x:1,z:2},
+        {x:0,z:3}, {x:1,z:3}
+      ];
+    default: 
+      return [ {x:0,z:0} ];
+  }
+}
+
+/************************************************************
+ * KLASA SHAPE3D - KLOCEK JAKO GROUP (W SCENIE GŁÓWNEJ)
  ************************************************************/
 class Shape3D {
   constructor(type, color) {
-    this.group = new THREE.Group(); 
+    this.group = new THREE.Group();
     scene.add(this.group);
 
     // Bazowa pozycja logiczna
     this.position = new THREE.Vector3(0,0,0);
-
-    // Tworzymy sub-bloczki
-    const coords = this.getShapeCoords(type);
+    
+    // Sub-bloczki wg definicji
+    const coords = getShapeCoords(type);
     coords.forEach(coord => {
-      const mesh = this.createBlock(color);
+      const geom = new THREE.BoxGeometry(1,1,1);
+      const mat = new THREE.MeshPhongMaterial({ color });
+
+      const mesh = new THREE.Mesh(geom, mat);
+      // OBA parametry => cienie także na innych klockach
+      mesh.castShadow = true;   
+      mesh.receiveShadow = true;
+
+      // Krawędzie w kontrastowym kolorze (0x000000)
+      const edgesGeom = new THREE.EdgesGeometry(geom);
+      const edges = new THREE.LineSegments(
+        edgesGeom,
+        new THREE.LineBasicMaterial({ color: 0x000000 })
+      );
+      mesh.add(edges);
+
       // local position
       mesh.position.set(coord.x, 0, coord.z);
       this.group.add(mesh);
     });
   }
 
-  getShapeCoords(type) {
-    switch(type){
-      case 'O': return [ {x:0,z:0}, {x:1,z:0}, {x:0,z:1}, {x:1,z:1} ];
-      case 'I': return [ {x:0,z:0}, {x:1,z:0}, {x:2,z:0}, {x:3,z:0} ];
-      case 'L': return [ {x:0,z:0}, {x:0,z:1}, {x:0,z:2}, {x:1,z:2} ];
-      case 'T': return [ {x:0,z:0}, {x:1,z:0}, {x:2,z:0}, {x:1,z:1} ];
-      default:  return [ {x:0,z:0} ];
-    }
-  }
-
-  createBlock(color) {
-    const geom = new THREE.BoxGeometry(1,1,1);
-    const mat = new THREE.MeshPhongMaterial({ color });
-    const mesh = new THREE.Mesh(geom, mat);
-    // Ustawiamy castShadow = true, by bloczek rzucał cień
-    mesh.castShadow = true;
-
-    // Krawędzie
-    const eg = new THREE.EdgesGeometry(geom);
-    const ed = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color:0xffffff }));
-    mesh.add(ed);
-
-    return mesh;
-  }
-
   setPosition(x,y,z) {
     this.position.set(x,y,z);
-    this.updateGroupTransform();
-  }
-  updateGroupTransform() {
-    this.group.position.set(this.position.x, this.position.y, this.position.z);
+    this.group.position.set(x,y,z);
   }
 
-  // Wyliczamy globalne pozycje sub-bloczków (po rotacji group)
   getGlobalPositions3D() {
     const out = [];
     this.group.children.forEach(child => {
@@ -113,52 +199,64 @@ class Shape3D {
       const gx = Math.round(localPos.x);
       const gy = Math.round(localPos.y);
       const gz = Math.round(localPos.z);
-      out.push({x: gx, y: gy, z: gz});
+      out.push({x:gx,y:gy,z:gz});
     });
     return out;
   }
 
-  // Obrót wokół osi X/Y/Z
-  rotateAxis(axis, clockwise=true) {
+  rotateAxis(axis, clockwise=true){
     const angle = (clockwise ? -1 : 1)*(Math.PI/2);
     const oldRot = this.group.rotation.clone();
-    if(axis==='x')      this.group.rotation.x += angle;
-    else if(axis==='y') this.group.rotation.y += angle;
-    else if(axis==='z') this.group.rotation.z += angle;
+    if(axis==='x'){
+      this.group.rotation.x += angle;
+    } else if(axis==='y'){
+      this.group.rotation.y += angle;
+    } else if(axis==='z'){
+      this.group.rotation.z += angle;
+    }
     return oldRot;
   }
 }
 
 /************************************************************
- * TETRIS3D - LOGIKA GRY
+ * KLASA TETRIS3D - GŁÓWNA LOGIKA
  ************************************************************/
 class Tetris3D {
   constructor() {
-    // Tablica 3D [x][y][z]
-    this.grid = Array.from({length: BOARD_WIDTH}, ()=>
-      Array.from({length: BOARD_HEIGHT},()=>
-        Array.from({length: BOARD_DEPTH}, ()=>null)
+    // Tablica 3D
+    this.grid = Array.from({length:BOARD_WIDTH}, ()=>
+      Array.from({length:BOARD_HEIGHT},()=>
+        Array.from({length:BOARD_DEPTH},()=>null)
       )
     );
+
     this.currentPiece = null;
+    // "Next piece" – zapowiedziany klocek (type + color)
+    // Będziemy go generować z wyprzedzeniem
+    this.nextType  = null;
+    this.nextColor = null;
 
     this.initSceneHelpers();
-    this.initKeyboard();
+    this.initControls();
+
+    // Pierwszy "next piece"
+    this.generateNextPiece();
+    // Tworzymy aktualny klocek i start
     this.spawnPiece();
     this.startFalling();
   }
 
   initSceneHelpers() {
-    // 1) Podłoga - plane geometry, receiveShadow = true
+    // Podłoga (plane) – receiveShadow = true
     const planeGeom = new THREE.PlaneGeometry(BOARD_WIDTH, BOARD_DEPTH);
-    const planeMat = new THREE.MeshPhongMaterial({ color: 0x222222 });
-    const bottomPlane = new THREE.Mesh(planeGeom, planeMat);
-    bottomPlane.receiveShadow = true; // żeby cień był widoczny
-    bottomPlane.rotation.x = -Math.PI/2;
-    bottomPlane.position.set(BOARD_WIDTH/2, 0, BOARD_DEPTH/2);
-    scene.add(bottomPlane);
+    const planeMat  = new THREE.MeshPhongMaterial({ color:0x222222 });
+    const floorMesh = new THREE.Mesh(planeGeom, planeMat);
+    floorMesh.rotation.x = -Math.PI/2;
+    floorMesh.position.set(BOARD_WIDTH/2,0,BOARD_DEPTH/2);
+    floorMesh.receiveShadow = true; 
+    scene.add(floorMesh);
 
-    // 2) Krawędzie boxa (bez pełnych ścian, by światło mogło wpaść)
+    // Krawędzie studni
     const boxGeom = new THREE.BoxGeometry(BOARD_WIDTH, BOARD_HEIGHT, BOARD_DEPTH);
     const edgesGeom = new THREE.EdgesGeometry(boxGeom);
     const edges = new THREE.LineSegments(edgesGeom, new THREE.LineBasicMaterial({ color:0x999999 }));
@@ -166,85 +264,64 @@ class Tetris3D {
     scene.add(edges);
   }
 
-  initKeyboard() {
-    document.addEventListener('keydown', e => {
+  initControls() {
+    document.addEventListener('keydown', e=>{
       switch(e.key){
-        // Ruch relatywny do kamery
-        case 'ArrowUp':
-          this.movePieceRelative(1, false); 
-          break;
-        case 'ArrowDown':
-          this.movePieceRelative(-1, false);
-          break;
-        case 'ArrowLeft':
-          this.movePieceRelative(1, true);
-          break;
-        case 'ArrowRight':
-          this.movePieceRelative(-1, true);
-          break;
+        // Ruch relatywny do kamery w XZ
+        case 'ArrowUp':    this.movePieceRelative(1,false); break;
+        case 'ArrowDown':  this.movePieceRelative(-1,false);break;
+        case 'ArrowLeft':  this.movePieceRelative(1,true);  break;
+        case 'ArrowRight': this.movePieceRelative(-1,true); break;
 
-        // Soft/Hard drop
-        case 'Shift': this.softDrop(); break;
+        // Spadanie
+        case 'Shift': this.softDrop(); break;  // -1 w Y
         case ' ':     this.hardDrop(); break;
 
         // Rotacje 3D
-        case 'w': this.rotatePiece('x', true); break;
-        case 's': this.rotatePiece('x', false);break;
-        case 'a': this.rotatePiece('y', false);break;
-        case 'd': this.rotatePiece('y', true); break;
-        case 'q': this.rotatePiece('z', false);break;
-        case 'e': this.rotatePiece('z', true); break;
+        case 'w': this.rotatePiece('x',true);  break;
+        case 's': this.rotatePiece('x',false); break;
+        case 'a': this.rotatePiece('y',false); break;
+        case 'd': this.rotatePiece('y',true);  break;
+        case 'q': this.rotatePiece('z',false); break;
+        case 'e': this.rotatePiece('z',true);  break;
 
-        // Widok
+        // Obrót kamery
         case 'Enter': this.rotateView(); break;
-        case 'c':
-        case 'C':
+        case 'c': case 'C':
           this.resetCameraView();
           break;
       }
     });
   }
 
-  movePieceRelative(direction, sideways) {
-    // Wektor "forward" kamery, ignorujemy Y
-    const forward = new THREE.Vector3();
-    camera.getWorldDirection(forward);
-    forward.y=0; forward.normalize();
-
-    // Wektor "right" = forward x (0,1,0)
-    const up = new THREE.Vector3(0,1,0);
-    const right = forward.clone().cross(up).normalize();
-
-    let movement = new THREE.Vector3();
-    if(sideways){
-      // lewo/prawo
-      movement.copy(right).multiplyScalar(-direction);
-    } else {
-      // przód/tył
-      movement.copy(forward).multiplyScalar(direction);
-    }
-    movement.y=0;
-
-    const {x,y,z} = this.currentPiece.position;
-    let nx = x + Math.round(movement.x);
-    let nz = z + Math.round(movement.z);
-
-    if (this.canPlace(this.currentPiece, nx, y, nz)) {
-      this.currentPiece.setPosition(nx, y, nz);
-    }
+  generateNextPiece() {
+    // Losujemy typ i kolor
+    const t = PIECE_TYPES[Math.floor(Math.random()*PIECE_TYPES.length)];
+    const c = COLORS[Math.floor(Math.random()*COLORS.length)];
+    this.nextType  = t;
+    this.nextColor = c;
+    // aktualizujemy mini scenę
+    updateNextPiecePreview(t, c);
   }
 
   spawnPiece() {
-    const t = PIECE_TYPES[Math.floor(Math.random()*PIECE_TYPES.length)];
-    const c = COLORS[Math.floor(Math.random()*COLORS.length)];
-    this.currentPiece = new Shape3D(t, c);
+    // Bierzemy nextType/Color
+    const t = this.nextType;
+    const c = this.nextColor;
 
+    // Nowy "next" na kolejny klocek
+    this.generateNextPiece();
+
+    // Tworzymy shape 3D w scenie
+    this.currentPiece = new Shape3D(t, c);
+    // umieszczamy w górze
     const sx = Math.floor(BOARD_WIDTH/2)-1;
     const sy = BOARD_HEIGHT-2;
     const sz = Math.floor(BOARD_DEPTH/2)-1;
     this.currentPiece.setPosition(sx, sy, sz);
 
-    if(!this.canPlace(this.currentPiece, sx,sy,sz)){
+    // kolizja?
+    if(!this.canPlace(this.currentPiece, sx, sy, sz)){
       alert("Game Over! Score: "+score);
       this.resetGame();
     }
@@ -254,14 +331,42 @@ class Tetris3D {
     const spd = FALL_SPEED_BASE / level;
     fallTimer = setInterval(()=>this.softDrop(), spd);
   }
+
   stopFalling() {
     clearInterval(fallTimer);
     fallTimer=null;
   }
 
+  movePieceRelative(direction, sideways) {
+    // Wektor "forward" kamery
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    forward.y=0; forward.normalize();
+
+    // "right" = forward x (0,1,0)
+    const up = new THREE.Vector3(0,1,0);
+    const right = forward.clone().cross(up).normalize();
+
+    let movement = new THREE.Vector3();
+    if(sideways){
+      movement.copy(right).multiplyScalar(-direction);
+    } else {
+      movement.copy(forward).multiplyScalar(direction);
+    }
+    movement.y=0;
+
+    const {x,y,z} = this.currentPiece.position;
+    let nx = x + Math.round(movement.x);
+    let nz = z + Math.round(movement.z);
+
+    if(this.canPlace(this.currentPiece, nx, y, nz)){
+      this.currentPiece.setPosition(nx, y, nz);
+    }
+  }
+
   softDrop() {
     const {x,y,z} = this.currentPiece.position;
-    if (this.canPlace(this.currentPiece, x, y-1, z)){
+    if(this.canPlace(this.currentPiece, x,y-1,z)){
       this.currentPiece.setPosition(x,y-1,z);
     } else {
       this.lockPiece();
@@ -279,7 +384,6 @@ class Tetris3D {
 
   rotatePiece(axis, clockwise){
     const oldRot = this.currentPiece.rotateAxis(axis, clockwise);
-    // Sprawdzamy kolizję
     const blocks = this.currentPiece.getGlobalPositions3D();
     let valid=true;
     for(let p of blocks){
@@ -305,41 +409,43 @@ class Tetris3D {
 
   checkFullLayers() {
     let layersCleared=0;
-    for(let y=0; y<BOARD_HEIGHT; y++){
+    for(let y=0;y<BOARD_HEIGHT;y++){
       if(this.isLayerFull(y)){
         this.clearLayer(y);
         layersCleared++;
       }
     }
     if(layersCleared>0){
-      score += layersCleared * BOARD_WIDTH * 100;
+      score += layersCleared*BOARD_WIDTH*100;
       document.getElementById('score').textContent = score;
       this.updateLevel();
     }
   }
+
   isLayerFull(ly){
-    for(let x=0; x<BOARD_WIDTH; x++){
-      for(let z=0; z<BOARD_DEPTH; z++){
+    for(let x=0;x<BOARD_WIDTH;x++){
+      for(let z=0;z<BOARD_DEPTH;z++){
         if(!this.grid[x][ly][z]) return false;
       }
     }
     return true;
   }
+
   clearLayer(ly){
     // usuwamy
     for(let x=0;x<BOARD_WIDTH;x++){
       for(let z=0;z<BOARD_DEPTH;z++){
-        let shape = this.grid[x][ly][z];
+        const shape = this.grid[x][ly][z];
         if(shape){
           scene.remove(shape.group);
           this.grid[x][ly][z] = null;
         }
       }
     }
-    // przesuwamy
+    // przesuwamy w dół
     for(let y=ly; y<BOARD_HEIGHT-1; y++){
-      for(let x=0; x<BOARD_WIDTH; x++){
-        for(let z=0; z<BOARD_DEPTH; z++){
+      for(let x=0;x<BOARD_WIDTH;x++){
+        for(let z=0;z<BOARD_DEPTH;z++){
           this.grid[x][y][z] = this.grid[x][y+1][z];
           this.grid[x][y+1][z] = null;
         }
@@ -349,7 +455,7 @@ class Tetris3D {
   }
 
   rebuildScene() {
-    // usuwamy ze sceny
+    // usuwamy
     for(let x=0;x<BOARD_WIDTH;x++){
       for(let y=0;y<BOARD_HEIGHT;y++){
         for(let z=0;z<BOARD_DEPTH;z++){
@@ -359,7 +465,7 @@ class Tetris3D {
         }
       }
     }
-    // budujemy ponownie
+    // odbudowujemy
     const shapeMap = new Map();
     for(let x=0;x<BOARD_WIDTH;x++){
       for(let y=0;y<BOARD_HEIGHT;y++){
@@ -373,43 +479,50 @@ class Tetris3D {
         }
       }
     }
-    shapeMap.forEach((positions,shape)=>{
+    shapeMap.forEach((positions, shape)=>{
       const newGroup = new THREE.Group();
       scene.add(newGroup);
 
+      // Bierzemy kolor z jednego sub-bloczka
       let color=0xffffff;
       if(shape.group.children.length>0){
-        const mc = shape.group.children[0].material;
-        if(mc) color=mc.color.getHex();
+        const mat = shape.group.children[0].material;
+        if(mat) color=mat.color.getHex();
       }
+      // minX, minY, minZ
       let minX=Infinity, minY=Infinity, minZ=Infinity;
       positions.forEach(p=>{
         if(p.x<minX) minX=p.x;
         if(p.y<minY) minY=p.y;
         if(p.z<minZ) minZ=p.z;
       });
+      // odtwarzamy sub-bloki
       positions.forEach(p=>{
-        const geom = new THREE.BoxGeometry(1,1,1);
-        const mat = new THREE.MeshPhongMaterial({color});
-        const mesh = new THREE.Mesh(geom,mat);
-        mesh.castShadow = true; // cień w nowej instancji
-        const eg = new THREE.EdgesGeometry(geom);
-        const ed = new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:0xffffff}));
+        const geom=new THREE.BoxGeometry(1,1,1);
+        const mat = new THREE.MeshPhongMaterial({ color });
+        const mesh=new THREE.Mesh(geom,mat);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+
+        // krawędzie
+        const eg=new THREE.EdgesGeometry(geom);
+        const ed=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({ color:0x000000 }));
         mesh.add(ed);
-        mesh.position.set(p.x-minX,p.y-minY,p.z-minZ);
+
+        mesh.position.set(p.x-minX, p.y-minY, p.z-minZ);
         newGroup.add(mesh);
       });
       newGroup.position.set(minX,minY,minZ);
 
       positions.forEach(p=>{
-        this.grid[p.x][p.y][p.z]={ group:newGroup };
+        this.grid[p.x][p.y][p.z] = { group:newGroup };
       });
     });
   }
 
   updateLevel() {
     level = Math.floor(score/1000)+1;
-    document.getElementById('level').textContent = level;
+    document.getElementById('level').textContent=level;
     this.stopFalling();
     this.startFalling();
   }
@@ -421,32 +534,33 @@ class Tetris3D {
         for(let z=0;z<BOARD_DEPTH;z++){
           if(this.grid[x][y][z]){
             scene.remove(this.grid[x][y][z].group);
-            this.grid[x][y][z] = null;
+            this.grid[x][y][z]=null;
           }
         }
       }
     }
     score=0; level=1;
-    document.getElementById('score').textContent=score;
-    document.getElementById('level').textContent=level;
+    document.getElementById('score').textContent=0;
+    document.getElementById('level').textContent=1;
+
+    this.generateNextPiece();
     this.spawnPiece();
     this.startFalling();
   }
 
-  // Ruch kamery - obrót 90° co Enter
-  rotateView(){
-    viewAngle = (viewAngle+90)%360;
+  // Sterowanie kamerą i widokiem
+  rotateView() {
+    viewAngle=(viewAngle+90)%360;
     const angleRad = THREE.MathUtils.degToRad(viewAngle);
-    const cx= BOARD_WIDTH/2, cy=BOARD_HEIGHT/2, cz=BOARD_DEPTH/2;
+    const cx=BOARD_WIDTH/2, cy=BOARD_HEIGHT/2, cz=BOARD_DEPTH/2;
     const radius=25;
-    const camX = cx + radius*Math.cos(angleRad);
-    const camZ = cz + radius*Math.sin(angleRad);
+    const camX=cx+radius*Math.cos(angleRad);
+    const camZ=cz+radius*Math.sin(angleRad);
     camera.position.set(camX, BOARD_HEIGHT+5, camZ);
     camera.lookAt(cx,cy,cz);
     document.getElementById('view-angle').textContent=viewAngle+'°';
   }
 
-  // Reset kamery (C)
   resetCameraView(){
     camera.position.copy(CAMERA_DEFAULT_POS);
     camera.lookAt(BOARD_WIDTH/2, BOARD_HEIGHT/2, BOARD_DEPTH/2);
@@ -459,6 +573,7 @@ class Tetris3D {
     const oldRot = shape.group.rotation.clone();
 
     shape.setPosition(nx,ny,nz);
+
     const blocks = shape.getGlobalPositions3D();
     let can=true;
     for(let p of blocks){
@@ -466,11 +581,11 @@ class Tetris3D {
         can=false; break;
       }
     }
-    // cofamy
     shape.setPosition(oldPos.x,oldPos.y,oldPos.z);
     shape.group.rotation.copy(oldRot);
     return can;
   }
+
   isValidCoord(x,y,z){
     if(x<0||x>=BOARD_WIDTH)  return false;
     if(y<0||y>=BOARD_HEIGHT) return false;
@@ -480,59 +595,83 @@ class Tetris3D {
 }
 
 /************************************************************
- * INICJALIZACJA THREE.JS
+ * INICJALIZACJA SCENY GŁÓWNEJ I RENDERER
  ************************************************************/
 function init() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x111111);
 
-  // Kamera perspektywiczna
-  const fov=60, aspect=window.innerWidth/window.innerHeight;
-  camera = new THREE.PerspectiveCamera(fov, aspect, 0.1, 1000);
+  // Kamera w scenie głównej
+  camera = new THREE.PerspectiveCamera(
+    60, 
+    window.innerWidth/window.innerHeight,
+    0.1, 
+    1000
+  );
   camera.position.copy(CAMERA_DEFAULT_POS);
   camera.lookAt(BOARD_WIDTH/2, BOARD_HEIGHT/2, BOARD_DEPTH/2);
 
-  // Renderer z włączonym cieniowaniem
-  renderer = new THREE.WebGLRenderer({antialias:true});
+  // Renderer
+  renderer = new THREE.WebGLRenderer({ antialias:true });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.shadowMap.enabled = true;        // włączamy cienie
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap; // miękkie cienie
+  renderer.shadowMap.enabled = true; 
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.body.appendChild(renderer.domElement);
 
-  // Światło kierunkowe - z góry
+  // Światło kierunkowe
   const dirLight = new THREE.DirectionalLight(0xffffff,1);
-  dirLight.position.set(0,50,0); // nad studnią
-  dirLight.castShadow = true;    // rzuca cienie
-  // Aby cień objął całą scenę, ustawiamy kamerę cieni
-  const d = 30; // half-size "ortho" w cieniach
+  dirLight.position.set(0,50,0);
+  dirLight.castShadow = true;
+  const d=30; // zasięg "kamery" cienia
   dirLight.shadow.camera.left = -d;
   dirLight.shadow.camera.right= d;
-  dirLight.shadow.camera.top  = d;
+  dirLight.shadow.camera.top   = d;
   dirLight.shadow.camera.bottom= -d;
-  dirLight.shadow.camera.near=1;
+  dirLight.shadow.camera.near=1; 
   dirLight.shadow.camera.far=100;
   scene.add(dirLight);
 
-  // Ambient light, aby nie było totalnie ciemno w środku
-  const amb = new THREE.AmbientLight(0x404040);
-  scene.add(amb);
+  const ambient = new THREE.AmbientLight(0x404040);
+  scene.add(ambient);
 
-  // Start gry
+  // Scena "Next Piece"
+  initNextScene();
+
+  // Start
   tetris = new Tetris3D();
   animate();
 }
 
-function animate(){
+// Główna pętla
+function animate() {
   requestAnimationFrame(animate);
-  renderer.render(scene,camera);
+
+  // 1) Render normalnej sceny
+  renderer.setScissorTest(false);
+  renderer.setViewport(0,0,window.innerWidth, window.innerHeight);
+  renderer.render(scene, camera);
+
+  // 2) Render sceny "Next Piece" w rogu
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const size = NEXT_VIEW_SIZE; // np. 100x100
+  renderer.setScissorTest(true);
+  renderer.setScissor(w-size-10, h-size-10, size, size); // mały kwadrat w prawym-górnym rogu
+  renderer.setViewport(w-size-10, h-size-10, size, size);
+  renderer.render(nextScene, nextCamera);
+
+  // Reset scissor
+  renderer.setScissorTest(false);
 }
 
-window.addEventListener('resize',()=>{
-  const w=window.innerWidth, h=window.innerHeight;
-  camera.aspect=w/h;
+window.addEventListener('resize', onWindowResize);
+function onWindowResize() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  camera.aspect = w/h;
   camera.updateProjectionMatrix();
   renderer.setSize(w,h);
-});
+}
 
 init();
 </script>
