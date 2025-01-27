@@ -1,0 +1,368 @@
+# 3D Tetris Documentation
+
+## Table of Contents
+
+1. [Introduction](#introduction)
+2. [Structure and Main Code Elements](#structure-and-main-code-elements)
+3. [Classes and Functions](#classes-and-functions)
+   - [Shape3D Class](#shape3d-class)
+   - [Tetris3D Class](#tetris3d-class)
+4. [New Piece Shapes](#new-piece-shapes)
+5. [Shadows on Blocks](#shadows-on-blocks)
+6. [“Next Piece” Preview](#next-piece-preview)
+7. [Advanced Gameplay Mechanics](#advanced-gameplay-mechanics)
+8. [Rendering Pipeline](#rendering-pipeline)
+9. [Customization Tips](#customization-tips)
+10. [Final Tips](#final-tips)
+11. [Dokumentacja PL / Polish Documentation](#polish-documentation)
+
+---
+
+## Introduction
+
+This project is a **3D Tetris** game written in JavaScript using **Three.js**. The goal is to create a 3D version of the classic Tetris game with additional features:
+
+- **Shadows** (realistic using `shadowMap` in Three.js)
+- **Contrast edges** for better visibility of blocks
+- **New shapes** (besides the classic "I", "O", "L", "T", including `3x1`, `2x1`, `N`, and `M`)
+- **Next Piece preview**, rendered in a separate mini-scene
+
+Gameplay involves blocks falling in a 3D well with dimensions of 10×30×10. The player can:
+
+- **Move** them along the XZ plane (relative to the camera view, using arrow keys)
+- **Rotate** in full 3D (around the X, Y, or Z axes)
+- **Speed up** the fall (Soft Drop / Hard Drop)
+- **Clear** full layers along the Y-axis
+
+All the code can run directly in the browser.
+
+---
+
+## Structure and Main Code Elements
+
+### Constant Declarations
+
+- `BOARD_WIDTH`, `BOARD_HEIGHT`, `BOARD_DEPTH` – dimensions of the well.
+- `FALL_SPEED_BASE` – base falling time of a block (ms).
+- `COLORS` – array of available colors.
+- `PIECE_TYPES` – array of shape names.
+
+### Global Variables
+
+- `scene`, `camera`, `renderer` – main Three.js elements.
+- `tetris` – instance of the `Tetris3D` class.
+- `nextScene`, `nextCamera` – separate scene + camera for the "Next Piece" preview.
+- `nextPieceMesh` – object holding the visualization of the next block.
+
+### Main Functions
+
+1. **`init()`**  
+   Initializes the main scene, sets up the camera, lights, and renderer with shadows.
+
+2. **`initNextScene()`**  
+   Sets up a mini-scene for block preview.
+
+3. **`animate()`**  
+   Renders the main scene and the mini-scene in the screen corner.
+
+4. **`onWindowResize()`**  
+   Adjusts rendering to the new window size.
+
+---
+
+## Classes and Functions
+
+### Shape3D Class
+
+- **Represents a single block** in the scene.
+- Each sub-block has:
+  - `castShadow = true` and `receiveShadow = true` (casts and receives shadows).
+- Methods:
+  - `setPosition(x, y, z)` – Sets the block's position.
+  - `rotateAxis(axis, clockwise)` – Rotates the block around an axis.
+
+### Tetris3D Class
+
+Main class managing game logic.
+
+1. **`spawnPiece()`**  
+   Creates a new block and places it at the top of the grid.
+
+2. **`checkFullLayers()`**  
+   Checks and removes filled layers.
+
+3. **`rotatePiece(axis, clockwise)`**  
+   Rotates the current block, checks collisions.
+
+---
+
+## New Piece Shapes
+
+- **`3x1`**: A horizontal block made of 3 units.
+- **`2x1`**: A horizontal block made of 2 units.
+- **`N`**: Shape similar to the letter "S".
+- **`M`**: Extended shape made of 6 units.
+
+---
+
+## Shadows on Blocks
+
+To make shadows visible, each block has:
+
+```javascript
+mesh.castShadow = true;
+mesh.receiveShadow = true;
+```
+
+The renderer must have `shadowMap.enabled = true` enabled.
+
+---
+
+## “Next Piece” Preview
+
+The preview is implemented using a separate scene and camera. The `updateNextPiecePreview()` function renders the next block in the mini-scene.
+
+---
+
+## Advanced Gameplay Mechanics
+
+1. **Camera Movement and Rotation**: The player can rotate the camera view by 90° increments, ensuring dynamic gameplay.
+2. **Collision Detection**: Detailed logic prevents blocks from overlapping or being placed out of bounds, ensuring smooth operation.
+3. **Soft and Hard Drops**: Blocks can fall faster temporarily (soft drop) or drop directly to the bottom (hard drop).
+
+---
+
+## Rendering Pipeline
+
+The game features two rendering pipelines:
+
+1. **Main Scene**: Renders the playing field, including active blocks, grid edges, and shadows.
+2. **Mini-Scene**: Displays the "Next Piece" using an orthographic camera for a simplified view.
+
+Viewport adjustments ensure proper placement and scaling of the mini-scene within the game window.
+
+---
+
+## Customization Tips
+
+1. **Adding New Shapes**:
+   - Extend the `PIECE_TYPES` array with a new name.
+   - Define the shape coordinates in the `getShapeCoords()` function.
+
+2. **Modifying Fall Speed**:
+   - Adjust `FALL_SPEED_BASE` to control the overall speed.
+   - Modify the level progression logic in `updateLevel()` for more granular control.
+
+3. **Enhancing Visuals**:
+   - Experiment with materials in `Shape3D` (e.g., metallic, wireframe).
+   - Add particle effects for layer clears.
+
+---
+
+## Final Tips
+
+- **Lighting**: Directional light above the grid improves visibility.
+- **Shapes**: Adding new shapes enhances gameplay.
+- **Development**: Mouse controls or advanced camera could be added.
+
+---
+
+<a name="polish-documentation"></a>
+
+# Dokumentacja PL
+
+## Spis Treści
+
+1. [Wprowadzenie](#wprowadzenie)
+2. [Struktura i główne elementy kodu](#struktura)
+3. [Opis klas i funkcji](#opis-klas)
+   - [Klasa `Shape3D`](#klasa-shape3d)
+   - [Klasa `Tetris3D`](#klasa-tetris3d)
+4. [Nowe kształty klocków](#nowe-kształty)
+5. [Cienie na klockach](#cienie-na-klockach)
+6. [Podgląd „Next Piece”](#podgląd-next-piece)
+7. [Zaawansowana Mechanika Gry](#zaawansowana-mechanika-gry)
+8. [Pipeline Renderingu](#pipeline-renderingu)
+9. [Porady dla Deweloperów](#porady-dla-deweloperów)
+10. [Wskazówki końcowe](#wskazówki-końcowe)
+
+---
+
+**The Polish section continues mirroring the additions and expanded explanations above in the user's native language.**
+
+
+
+---
+
+<a name="polish-documentation"></a>
+
+# Dokumentacja PL
+
+## Spis Treści
+
+1. [Wprowadzenie](#wprowadzenie)
+2. [Struktura i główne elementy kodu](#struktura)
+3. [Opis klas i funkcji](#opis-klas)
+   - [Klasa `Shape3D`](#klasa-shape3d)
+   - [Klasa `Tetris3D`](#klasa-tetris3d)
+4. [Nowe kształty klocków](#nowe-kształty)
+5. [Cienie na klockach](#cienie-na-klockach)
+6. [Podgląd „Next Piece”](#podgląd-next-piece)
+7. [Zaawansowana Mechanika Gry](#zaawansowana-mechanika-gry)
+8. [Pipeline Renderingu](#pipeline-renderingu)
+9. [Porady dla Deweloperów](#porady-dla-deweloperów)
+10. [Wskazówki końcowe](#wskazówki-końcowe)
+
+---
+
+## Wprowadzenie
+
+Projekt **3D Tetris** napisany w JavaScript z użyciem **Three.js** to trójwymiarowa wersja klasycznej gry Tetris z dodatkowymi funkcjami:
+
+- **Cienie** (rzeczywiste z wykorzystaniem `shadowMap` w Three.js)
+- **Kontrastowe krawędzie** dla lepszej widoczności klocków
+- **Nowe kształty** (oprócz klasycznych "I", "O", "L", "T", również `3x1`, `2x1`, `N`, `M`)
+- **Podgląd następnego klocka**, renderowany w osobnej mini-scenie
+
+Gra polega na układaniu spadających klocków w trójwymiarowej studni o wymiarach 10×30×10. Gracz może:
+
+- **Przesuwać** klocki w płaszczyźnie XZ (relatywnie do kamery, za pomocą strzałek)
+- **Obracać** klocki w pełnym 3D (wokół osi X, Y lub Z)
+- **Przyspieszać** spadanie (Soft Drop / Hard Drop)
+- **Usuwać** pełne warstwy w osi Y
+
+Kod można uruchomić bezpośrednio w przeglądarce.
+
+---
+
+## Struktura i główne elementy kodu
+
+### Deklaracje stałych
+
+- `BOARD_WIDTH`, `BOARD_HEIGHT`, `BOARD_DEPTH` – wymiary studni.
+- `FALL_SPEED_BASE` – bazowy czas spadania klocka (ms).
+- `COLORS` – tablica dostępnych kolorów.
+- `PIECE_TYPES` – tablica nazw kształtów.
+
+### Zmienne globalne
+
+- `scene`, `camera`, `renderer` – główne elementy Three.js.
+- `tetris` – instancja klasy `Tetris3D`.
+- `nextScene`, `nextCamera` – osobna scena + kamera do podglądu "Next Piece".
+- `nextPieceMesh` – obiekt wizualizujący następny klocek.
+
+### Główne funkcje
+
+1. **`init()`**
+   Tworzy główną scenę, ustawia kamerę, światła i renderer z obsługą cieni.
+
+2. **`initNextScene()`**
+   Przygotowuje mini-scenę do podglądu klocka.
+
+3. **`animate()`**
+   Renderuje główną scenę oraz mini-scenę w rogu ekranu.
+
+4. **`onWindowResize()`**
+   Dopasowuje renderowanie do nowego rozmiaru okna.
+
+---
+
+## Opis klas i funkcji
+
+### Klasa `Shape3D`
+
+- **Reprezentuje pojedynczy klocek** w scenie.
+- Każdy sub-bloczek ma:
+  - `castShadow = true` i `receiveShadow = true` (rzuca i odbiera cienie).
+- Metody:
+  - `setPosition(x, y, z)` – Ustawia pozycję klocka.
+  - `rotateAxis(axis, clockwise)` – Obraca klocek wokół osi.
+
+### Klasa `Tetris3D`
+
+Główna klasa zarządzająca logiką gry.
+
+1. **`spawnPiece()`**
+   Tworzy nowy klocek i umieszcza go na górze planszy.
+
+2. **`checkFullLayers()`**
+   Sprawdza i usuwa pełne warstwy.
+
+3. **`rotatePiece(axis, clockwise)`**
+   Obraca bieżący klocek, sprawdza kolizje.
+
+---
+
+## Nowe kształty klocków
+
+- **`3x1`**: Poziomy klocek z 3 bloczków.
+- **`2x1`**: Poziomy klocek z 2 bloczków.
+- **`N`**: Kształt podobny do litery "S".
+- **`M`**: Rozszerzony kształt z 6 bloczków.
+
+---
+
+## Cienie na klockach
+
+Aby cienie były widoczne, każdy bloczek ma:
+
+```javascript
+mesh.castShadow = true;
+mesh.receiveShadow = true;
+```
+
+Renderer musi mieć włączone `shadowMap.enabled = true`.
+
+---
+
+## Podgląd „Next Piece”
+
+Podgląd jest zaimplementowany za pomocą osobnej sceny i kamery. Funkcja `updateNextPiecePreview()` renderuje następny klocek w mini-scenie.
+
+---
+
+## Zaawansowana Mechanika Gry
+
+1. **Ruch i obrót kamery**: Gracz może obracać widok kamery o 90°, co urozmaica rozgrywkę.
+2. **Detekcja kolizji**: Logika zapobiega nakładaniu się klocków lub ich wychodzeniu poza granice planszy.
+3. **Soft i Hard Drops**: Klocki mogą spadać szybciej (soft drop) lub natychmiastowo na dół (hard drop).
+
+---
+
+## Pipeline Renderingu
+
+Gra wykorzystuje dwa główne pipeline'y renderowania:
+
+1. **Główna scena**: Renderuje planszę do gry, aktywne klocki, krawędzie siatki i cienie.
+2. **Mini-scena**: Wyświetla "Next Piece" przy użyciu kamery ortograficznej dla uproszczonego widoku.
+
+Dostosowanie viewportu zapewnia właściwe umiejscowienie i skalowanie mini-sceny w oknie gry.
+
+---
+
+## Porady dla Deweloperów
+
+1. **Dodawanie nowych kształtów**:
+   - Rozszerz tablicę `PIECE_TYPES` o nową nazwę.
+   - Zdefiniuj współrzędne kształtu w funkcji `getShapeCoords()`.
+
+2. **Modyfikacja szybkości opadania**:
+   - Dostosuj wartość `FALL_SPEED_BASE`, aby zmienić prędkość.
+   - Zmień logikę progresji poziomów w `updateLevel()` dla większej kontroli.
+
+3. **Ulepszanie wizualizacji**:
+   - Eksperymentuj z materiałami w `Shape3D` (np. metaliczne, wireframe).
+   - Dodaj efekty cząsteczkowe przy usuwaniu warstw.
+
+---
+
+## Wskazówki końcowe
+
+- **Oświetlenie**: Kierunkowe światło nad planszą poprawia widoczność.
+- **Kształty**: Dodawanie nowych kształtów zwiększa różnorodność gry.
+- **Rozwój**: Można dodać sterowanie myszą lub zaawansowaną kamerę.
+
+---
+
+**Koniec dokumentacji**.
+
