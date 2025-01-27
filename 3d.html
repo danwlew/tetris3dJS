@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Tetris (Ruch w XZ, obroty wokół XYZ)</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    #ui {
+      position: absolute;
+      top: 10px; left: 10px;
+      background: rgba(0,0,0,0.5);
+      color: #fff; padding: 10px;
+      z-index: 999;
+      font-family: sans-serif;
+    }
+    #ui div { margin-bottom: 5px; }
+  </style>
+</head>
+<body>
+
+<div id="ui">
+  <div>Score: <span id="score">0</span></div>
+  <div>Level: <span id="level">1</span></div>
+  <div>View: <span id="view-angle">0°</span></div>
+</div>
+
+<!-- Ładujemy Three.js -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+
+<script>
+/************************************************************
+ * KONFIGURACJA
+ ************************************************************/
+const BOARD_WIDTH = 10;   // rozmiar w osi X
+const BOARD_HEIGHT = 30;  // wysokość w osi Y
+const BOARD_DEPTH = 10;   // "głębokość" w osi Z
+
+const FALL_SPEED_BASE = 1000;
+let score = 0;
+let level = 1;
+let viewAngle = 0;
+
+// Kolory i kształty (2D w płaszczyźnie XZ, Y = 0 w definicji)
+const COLORS = [0xff6b6b, 0x4ecdc4, 0x45b7d1, 0x96ceb4, 0xffeead, 0xff9999];
+const PIECE_TYPES = ['I', 'O', 'L', 'T'];
+
+let scene, camera, renderer;
+let tetris;    // instancja klasy Tetris3D
+let fallTimer; // setInterval ID
+
+/************************************************************
+ * Klasa Shape3D - definiuje klocek jako jeden Group
+ ************************************************************/
+class Shape3D {
+  constructor(type, color) {
+    this.group = new THREE.Group(); 
+    scene.add(this.group);
+
+    // Bazowa (logic, integer) pozycja klocka w siatce
+    // (niekoniecznie to samo co group.position, bo group.rotation może dochodzić)
+    this.position = new THREE.Vector3(0,0,0);
+    // Domyślna rotacja (Euler) w group – 0,0,0
+    // do obrotów w 3D będziemy używać quaterniona lub .rotation
+
+    // Tworzymy sub-bloczki w localSpace
+    const coords = this.getShapeCoords(type);
+    coords.forEach(coord => {
+      const mesh = this.createBlock(color);
+      // local position
+      mesh.position.set(coord.x, 0, coord.z);
+      this.group.add(mesh);
+    });
+  }
+
+  // Definicje kształtów w 2D (x,z)
+  getShapeCoords(type) {
+    switch(type) {
+      case 'O': return [ {x:0,z:0}, {x:1,z:0}, {x:0,z:1}, {x:1,z:1} ];
+      case 'I': return [ {x:0,z:0}, {x:1,z:0}, {x:2,z:0}, {x:3,z:0} ];
+      case 'L': return [ {x:0,z:0}, {x:0,z:1}, {x:0,z:2}, {x:1,z:2} ];
+      case 'T': return [ {x:0,z:0}, {x:1,z:0}, {x:2,z:0}, {x:1,z:1} ];
+      default:  return [ {x:0,z:0} ]; // fallback
+    }
+  }
+
+  createBlock(color) {
+    const geom = new THREE.BoxGeometry(1,1,1);
+    const mat = new THREE.MeshPhongMaterial({ color });
+    const mesh = new THREE.Mesh(geom, mat);
+
+    // Krawędzie
+    const eg = new THREE.EdgesGeometry(geom);
+    const ed = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color:0xffffff }));
+    mesh.add(ed);
+
+    return mesh;
+  }
+
+  // Ustawiamy bazową pozycję klocka (x,y,z) w siatce
+  // Group przesuniemy w scenie – rotację grupy zostawiamy nienaruszoną.
+  setPosition(x, y, z) {
+    this.position.set(x, y, z);
+    this.updateGroupTransform();
+  }
+
+  // Aktualizuje `group.position` tak, by środek klocka w scenie był w (x,y,z).
+  // W tym przykładzie przyjmujemy, że (x,y,z) dotyczy lewego-dolnego (w localSpace) sub-bloczka,
+  // a sub-bloczki w group mają offsety w localSpace. 
+  // Rotacja group jest w .rotation (Euler).
+  updateGroupTransform() {
+    // group.position = (this.position.x, this.position.y, this.position.z)
+    // Bez offsetu pivotu – w 3D Tetrisie można kombinować z pivotem klocka. 
+    this.group.position.set(this.position.x, this.position.y, this.position.z);
+  }
+
+  // Zwraca pozycje globalne sub-bloczków (po uwzględnieniu local pos i rotacji group).
+  // Dla kolizji musimy mieć integer x,y,z. Tu jest problem, bo przy obrocie 3D
+  // sub-bloczki "lądują" w pozycjach niecałkowitych. Trzeba je zaokrąglać i sprawdzać, czy mieszczą się w siatce.
+  getGlobalPositions3D() {
+    const result = [];
+    this.group.children.forEach(childMesh => {
+      // Obliczamy globalną transformację (po uwzględnieniu group.position i group.rotation)
+      // Można użyć childMesh.getWorldPosition() i getWorldQuaternion, ale zrobimy manualnie:
+      const localPos = childMesh.position.clone(); 
+      // Przesuwamy i obracamy wg group:
+      // 1) obrót: localPos.applyQuaternion(this.group.quaternion)
+      // 2) translacja: localPos.add(this.group.position)
+      localPos.applyQuaternion(this.group.quaternion); 
+      localPos.add(this.group.position);
+
+      // Zaokrąglamy do integer (w Tetrisie 3D tak najczęściej robimy).
+      const gx = Math.round(localPos.x);
+      const gy = Math.round(localPos.y);
+      const gz = Math.round(localPos.z);
+
+      result.push({ x: gx, y: gy, z: gz });
+    });
+    return result;
+  }
+
+  // Obrót wokół wybranej osi (x,y,z) o 90° w jedną lub drugą stronę.
+  // axis: 'x' | 'y' | 'z'
+  // clockwise: bool
+  rotateAxis(axis, clockwise = true) {
+    // Kąt 90 stopni
+    const angle = (clockwise ? -1 : 1) * (Math.PI / 2);
+    
+    let rot = new THREE.Euler(0,0,0, 'XYZ');
+    if (axis === 'x') rot.x = angle;
+    if (axis === 'y') rot.y = angle;
+    if (axis === 'z') rot.z = angle;
+
+    // Zapisujemy starą rotację
+    const oldRotation = this.group.rotation.clone();
+
+    // Dodajemy do obecnej rotacji
+    this.group.rotation.x += rot.x;
+    this.group.rotation.y += rot.y;
+    this.group.rotation.z += rot.z;
+
+    // Można normalizować rotacje do [0..2π], ale to niekonieczne
+    // this.group.rotation.order = 'XYZ';
+
+    // Po obrocie – gotowe. 
+    // Ewentualnie, jeśli kolizja -> cofniemy:
+    // (Cofnięcie robimy w Tetris3D.canPlace / zewnątrz).
+    return oldRotation;
+  }
+}
+
+/************************************************************
+ * Klasa Tetris3D - cała logika gry
+ ************************************************************/
+class Tetris3D {
+  constructor() {
+    this.grid = Array.from({length: BOARD_WIDTH}, ()=>
+      Array.from({length: BOARD_HEIGHT},()=>
+        Array.from({length: BOARD_DEPTH}, ()=> null)
+      )
+    );
+    this.currentPiece = null;
+    this.initSceneHelpers();
+    this.initKeyboard();
+    this.spawnPiece();
+    this.startFalling();
+  }
+
+  initSceneHelpers() {
+    // GridHelper w płaszczyźnie XZ
+    const gridHelper = new THREE.GridHelper(BOARD_WIDTH, BOARD_WIDTH, 0xffffff, 0x888888);
+    gridHelper.position.set(BOARD_WIDTH/2, 0, BOARD_DEPTH/2);
+    scene.add(gridHelper);
+
+    // Box Edges 10x30x10
+    const boxGeom = new THREE.BoxGeometry(BOARD_WIDTH, BOARD_HEIGHT, BOARD_DEPTH);
+    const edgesGeom = new THREE.EdgesGeometry(boxGeom);
+    const edgesMat = new THREE.LineBasicMaterial({ color: 0x999999 });
+    const boxEdges = new THREE.LineSegments(edgesGeom, edgesMat);
+    boxEdges.position.set(BOARD_WIDTH/2, BOARD_HEIGHT/2, BOARD_DEPTH/2);
+    scene.add(boxEdges);
+  }
+
+  initKeyboard() {
+    document.addEventListener('keydown', (e) => {
+      switch(e.key) {
+        // Ruch w płaszczyźnie XZ
+        case 'ArrowLeft':  this.movePiece(-1,0);  break; // x--
+        case 'ArrowRight': this.movePiece(1,0);   break; // x++
+        case 'ArrowUp':    this.movePiece(0,-1);  break; // z--
+        case 'ArrowDown':  this.movePiece(0,1);   break; // z++
+
+        // Soft drop / Hard drop
+        case 'Shift':  this.softDrop(); break;
+        case ' ':      this.hardDrop(); break;
+
+        // Rotacje wokół X, Y, Z
+        // W / S = X
+        case 'w': this.rotatePiece('x', true);  break;
+        case 's': this.rotatePiece('x', false); break;
+        // A / D = Y
+        case 'a': this.rotatePiece('y', false); break;
+        case 'd': this.rotatePiece('y', true);  break;
+        // Q / E = Z
+        case 'q': this.rotatePiece('z', false); break;
+        case 'e': this.rotatePiece('z', true);  break;
+
+        // Obrót widoku
+        case 'Enter': this.rotateView(); break;
+      }
+    });
+  }
+
+  spawnPiece() {
+    const t = PIECE_TYPES[Math.floor(Math.random()*PIECE_TYPES.length)];
+    const c = COLORS[Math.floor(Math.random()*COLORS.length)];
+    this.currentPiece = new Shape3D(t, c);
+
+    // Ustawiamy u góry, np. x=4, y=28, z=4
+    const startX = Math.floor(BOARD_WIDTH/2)-1;
+    const startY = BOARD_HEIGHT-2;
+    const startZ = Math.floor(BOARD_DEPTH/2)-1;
+    this.currentPiece.setPosition(startX, startY, startZ);
+
+    // Jeżeli natychmiast kolizja -> koniec
+    if (!this.canPlace(this.currentPiece, startX, startY, startZ)) {
+      alert("Game Over! Score: " + score);
+      this.resetGame();
+    }
+  }
+
+  startFalling() {
+    const speed = FALL_SPEED_BASE / level;
+    fallTimer = setInterval(()=>this.softDrop(), speed);
+  }
+
+  stopFalling() {
+    clearInterval(fallTimer);
+    fallTimer = null;
+  }
+
+  // Ruch w X i Z (dx, dz)
+  movePiece(dx, dz) {
+    const {x, y, z} = this.currentPiece.position;
+    const nx = x + dx;
+    const nz = z + dz;
+    if (this.canPlace(this.currentPiece, nx, y, nz)) {
+      this.currentPiece.setPosition(nx, y, nz);
+    }
+  }
+
+  softDrop() {
+    // spadanie w osi Y
+    const {x, y, z} = this.currentPiece.position;
+    if (this.canPlace(this.currentPiece, x, y-1, z)) {
+      this.currentPiece.setPosition(x, y-1, z);
+    } else {
+      this.lockPiece();
+    }
+  }
+
+  hardDrop() {
+    let {x, y, z} = this.currentPiece.position;
+    while(this.canPlace(this.currentPiece, x, y-1, z)) {
+      y--;
+    }
+    this.currentPiece.setPosition(x, y, z);
+    this.lockPiece();
+  }
+
+  // Obrót wokół którejś osi
+  rotatePiece(axis, clockwise) {
+    // Zapisujemy starą rotację group
+    const oldRotation = this.currentPiece.rotateAxis(axis, clockwise);
+
+    // Sprawdzamy kolizję w nowej orientacji
+    const positions = this.currentPiece.getGlobalPositions3D();
+    let isValid = true;
+    for (let p of positions) {
+      if (!this.isValidCoord(p.x, p.y, p.z) || this.grid[p.x][p.y][p.z]) {
+        isValid = false;
+        break;
+      }
+    }
+    // Cofamy obrót, jeśli kolizja
+    if (!isValid) {
+      this.currentPiece.group.rotation.copy(oldRotation);
+    }
+  }
+
+  // Sprawdza, czy klocek (bez zmieniania jego transformacji) może być w (nx,ny,nz).
+  canPlace(shape, nx, ny, nz) {
+    // Zapamiętujemy starą pozycję
+    const oldPos = shape.position.clone();
+    const oldRot = shape.group.rotation.clone();
+
+    // Ustawiamy tymczasowo
+    shape.setPosition(nx, ny, nz);
+
+    // Sprawdzamy globalne sub-bloczki
+    const positions = shape.getGlobalPositions3D();
+    let can = true;
+    for (let p of positions) {
+      if (!this.isValidCoord(p.x, p.y, p.z) || this.grid[p.x][p.y][p.z]) {
+        can = false;
+        break;
+      }
+    }
+
+    // Cofamy
+    shape.setPosition(oldPos.x, oldPos.y, oldPos.z);
+    shape.group.rotation.copy(oldRot);
+
+    return can;
+  }
+
+  // Pozycja w zakresie i brak kolizji
+  isValidCoord(x,y,z) {
+    if (x<0 || x>=BOARD_WIDTH)  return false;
+    if (y<0 || y>=BOARD_HEIGHT) return false;
+    if (z<0 || z>=BOARD_DEPTH)  return false;
+    return true;
+  }
+
+  lockPiece() {
+    this.stopFalling();
+
+    // Zatapiamy klocek
+    const subPositions = this.currentPiece.getGlobalPositions3D();
+    subPositions.forEach(p => {
+      this.grid[p.x][p.y][p.z] = this.currentPiece; 
+    });
+
+    // Szukamy pełnych warstw
+    this.checkFullLayers();
+
+    // Nowy klocek
+    this.spawnPiece();
+    this.startFalling();
+  }
+
+  checkFullLayers() {
+    let layersCleared = 0;
+    for (let y=0; y<BOARD_HEIGHT; y++) {
+      if (this.isLayerFull(y)) {
+        this.clearLayer(y);
+        layersCleared++;
+      }
+    }
+    if (layersCleared > 0) {
+      score += layersCleared * BOARD_WIDTH * 100;
+      document.getElementById('score').textContent = score;
+      this.updateLevel();
+    }
+  }
+
+  isLayerFull(y) {
+    for (let x=0; x<BOARD_WIDTH; x++) {
+      for (let z=0; z<BOARD_DEPTH; z++) {
+        if (!this.grid[x][y][z]) return false;
+      }
+    }
+    return true;
+  }
+
+  clearLayer(yCleared) {
+    // proste usunięcie bloczków ze sceny
+    for (let x=0; x<BOARD_WIDTH; x++) {
+      for (let z=0; z<BOARD_DEPTH; z++) {
+        const shape = this.grid[x][yCleared][z];
+        if (shape) {
+          scene.remove(shape.group);
+          this.grid[x][yCleared][z] = null;
+        }
+      }
+    }
+    // Przesuwamy warstwy powyżej w dół
+    for (let y=yCleared; y<BOARD_HEIGHT-1; y++) {
+      for (let x=0; x<BOARD_WIDTH; x++) {
+        for (let z=0; z<BOARD_DEPTH; z++) {
+          this.grid[x][y][z] = this.grid[x][y+1][z];
+          this.grid[x][y+1][z] = null;
+        }
+      }
+    }
+    // W tym prostym przykładzie przebudowujemy scenę:
+    this.rebuildScene();
+  }
+
+  rebuildScene() {
+    // 1) usuwamy shape'y ze sceny
+    for (let x=0; x<BOARD_WIDTH; x++) {
+      for (let y=0; y<BOARD_HEIGHT; y++) {
+        for (let z=0; z<BOARD_DEPTH; z++) {
+          if (this.grid[x][y][z]) {
+            scene.remove(this.grid[x][y][z].group);
+          }
+        }
+      }
+    }
+    // 2) odtwarzamy shape'y
+    // (dla prototypu – można lepiej)
+    const shapeMap = new Map();
+    for (let x=0; x<BOARD_WIDTH; x++) {
+      for (let y=0; y<BOARD_HEIGHT; y++) {
+        for (let z=0; z<BOARD_DEPTH; z++) {
+          const shape = this.grid[x][y][z];
+          if (!shape) continue;
+          if (!shapeMap.has(shape)) {
+            shapeMap.set(shape, []);
+          }
+          shapeMap.get(shape).push({x,y,z});
+        }
+      }
+    }
+    // Każdy shape wstawiamy ponownie do sceny i ustawiamy sub-bloczki
+    shapeMap.forEach((positions, shape) => {
+      // Tworzymy nowy Group, re-render sub-bloczków
+      const newGroup = new THREE.Group();
+      scene.add(newGroup);
+
+      let color = 0xffffff;
+      if (shape.group.children.length>0) {
+        // bierzemy kolor z jednego z sub-blocków (Mesh)
+        const mesh = shape.group.children[0];
+        if (mesh.material) {
+          color = mesh.material.color.getHex();
+        }
+      }
+      // Znajdujemy minX, minY, minZ
+      let minX=Infinity, minY=Infinity, minZ=Infinity;
+      positions.forEach(p => {
+        if (p.x<minX) minX=p.x;
+        if (p.y<minY) minY=p.y;
+        if (p.z<minZ) minZ=p.z;
+      });
+      // Tworzymy sub-bloki
+      positions.forEach(p => {
+        const gx = p.x - minX;
+        const gy = p.y - minY;
+        const gz = p.z - minZ;
+
+        const geom = new THREE.BoxGeometry(1,1,1);
+        const mat = new THREE.MeshPhongMaterial({ color });
+        const mesh = new THREE.Mesh(geom, mat);
+        const eg = new THREE.EdgesGeometry(geom);
+        const ed = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({color:0xffffff}));
+        mesh.add(ed);
+
+        mesh.position.set(gx, gy, gz);
+        newGroup.add(mesh);
+      });
+      newGroup.position.set(minX, minY, minZ);
+
+      // Zaktualizuj grid
+      positions.forEach(p => {
+        this.grid[p.x][p.y][p.z] = {
+          group: newGroup
+        };
+      });
+    });
+  }
+
+  updateLevel() {
+    level = Math.floor(score/1000) + 1;
+    document.getElementById('level').textContent = level;
+    this.stopFalling();
+    this.startFalling();
+  }
+
+  resetGame() {
+    this.stopFalling();
+    // wyczyść grid i scenę
+    for (let x=0; x<BOARD_WIDTH; x++) {
+      for (let y=0; y<BOARD_HEIGHT; y++) {
+        for (let z=0; z<BOARD_DEPTH; z++) {
+          if (this.grid[x][y][z]) {
+            scene.remove(this.grid[x][y][z].group);
+          }
+          this.grid[x][y][z] = null;
+        }
+      }
+    }
+    score = 0; level = 1;
+    document.getElementById('score').textContent = score;
+    document.getElementById('level').textContent = level;
+    this.spawnPiece();
+    this.startFalling();
+  }
+
+  rotateView() {
+    viewAngle = (viewAngle + 90) % 360;
+    const angleRad = THREE.MathUtils.degToRad(viewAngle);
+    const cx = BOARD_WIDTH/2, cy = BOARD_HEIGHT/2, cz = BOARD_DEPTH/2;
+    const radius = 25;
+    const camX = cx + radius * Math.cos(angleRad);
+    const camZ = cz + radius * Math.sin(angleRad);
+    camera.position.set(camX, BOARD_HEIGHT+5, camZ);
+    camera.lookAt(cx, cy, cz);
+    document.getElementById('view-angle').textContent = viewAngle + '°';
+  }
+}
+
+/************************************************************
+ * Inicjalizacja Three.js
+ ************************************************************/
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x111111);
+
+  // Kamera perspektywiczna
+  const fov = 60, aspect = window.innerWidth / window.innerHeight;
+  const near = 0.1, far = 1000;
+  camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+  camera.position.set(15, 40, 25);
+  camera.lookAt(BOARD_WIDTH/2, BOARD_HEIGHT/2, BOARD_DEPTH/2);
+
+  renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  // Światło
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+  dirLight.position.set(10, 50, 10);
+  scene.add(dirLight);
+
+  const ambient = new THREE.AmbientLight(0x404040);
+  scene.add(ambient);
+
+  // Rozpoczynamy Tetris
+  tetris = new Tetris3D();
+
+  animate();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', onWindowResize);
+function onWindowResize() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+
+init();
+</script>
+</body>
+</html>
